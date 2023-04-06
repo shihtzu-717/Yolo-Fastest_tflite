@@ -17,41 +17,36 @@ NUM_BOXES_PER_BLOCK = 3
 INPUT_SIZE = 416
 
 # object_names
-labels = ["Pothole",
-          "Fatigue-Crack",
-          "Vertical-Crack",
-          "Horizontal-Crack",
-          "PoorFixed-Road",
-          "Trash",
-          "Banner",
-          "RoadMark-Poor",
-          "SafetyRod-Poor",
-          "Manhole"]
+labels = []
 
-ANCHORS = [115,73, 119,199, 242,238, 12,18, 37,49, 52,132]
+ANCHORS = []
 MASKS = [[3, 4, 5], [0, 1, 2]]
 THRESHOLD = 0.25
 mNmsThresh = 0.01
-ORG_WIDTH = 1920
-ORG_HEIGHT = 1080
-MODEL_WIDTH = 416
-MODEL_HEIGHT = 416
 
 def get_obj_names(names_file):
-    labels=[]
-    lines=[]
+    global labels
     with open(names_file, 'r') as f:
-        lines = [i.strip() for i in f.readlines()]
-    for i in lines:
-        labels.append(i)
+        labels = [i.strip() for i in f.readlines()]
     return labels
+
+def get_anchors(anchors_file):
+    global ANCHORS
+    with open(anchors_file, 'r') as f:
+        ANCHORS = [float(x) for x in f.readline().split(',')]
+    return ANCHORS
+
 
 def softmax(x):
     exp_x = np.exp(x - np.max(x))
     return exp_x / np.sum(exp_x)
 
+def change_ratio(box, img_shape, model_shape):
+    ORG_WIDTH = img_shape[0]
+    ORG_HEIGHT = img_shape[1]
+    MODEL_WIDTH = model_shape[0]
+    MODEL_HEIGHT = model_shape[1]
 
-def change_ratio(box):
     x1_model_size = box[0]
     y1_model_size = box[1]
     x2_model_size = box[2]
@@ -115,9 +110,7 @@ def box_union(a, b):
     u = (a_right - a_left) * (a_bottom - a_top) + (b_right - b_left) * (b_bottom - b_top) - i
     return u
 
-def get_detections_for_keras_float32(interpreter, img_path, shape):
-
-    org_img = cv2.imread(img_path)
+def get_detections_for_keras_float32(org_img, interpreter, shape, threshold):
     bgr_img = cv2.resize(org_img, shape)
     rgb_img = cv2.cvtColor(bgr_img, cv2.COLOR_BGR2RGB) # Convert BGR to RGB
 
@@ -154,10 +147,7 @@ def get_detections_for_keras_float32(interpreter, img_path, shape):
                             detected_class = c
                             max_class = classes[c]
                     confidence_in_class = max_class * confidence
-                    if confidence_in_class > 0.25:
-                        print(img_path)
-                        print(detected_class)
-                    if confidence_in_class > THRESHOLD:
+                    if confidence_in_class > threshold:
                         x_pos = (x + (1 / (1 + math.exp(-out[0, y, x, 0])))) * (INPUT_SIZE / grid_width) # sigmoid
                         y_pos = (y + (1 / (1 + math.exp(-out[0, y, x, 1])))) * (INPUT_SIZE / grid_width) # sigmoid
                         w = math.exp(out[0, y, x, 2]) * ANCHORS[2 * MASKS[i][b] + 0]
@@ -168,8 +158,7 @@ def get_detections_for_keras_float32(interpreter, img_path, shape):
     return detections
 
 
-def get_detections_for_keras_int8(interpreter, img_path, shape):
-    org_img = cv2.imread(img_path)
+def get_detections_for_keras_int8(org_img, interpreter, shape, threshold):
     bgr_img = cv2.resize(org_img, shape)
     rgb_img = cv2.cvtColor(bgr_img, cv2.COLOR_BGR2RGB) # Convert BGR to RGB
 
@@ -206,7 +195,7 @@ def get_detections_for_keras_int8(interpreter, img_path, shape):
                             detected_class = c
                             max_class = classes[c]
                     confidence_in_class = max_class * confidence
-                    if confidence_in_class > THRESHOLD:
+                    if confidence_in_class > threshold:
                         x_pos = (x + (1 / (1 + math.exp(-out_f[0, y, x, 0])))) * (INPUT_SIZE / grid_width) # sigmoid
                         y_pos = (y + (1 / (1 + math.exp(-out_f[0, y, x, 1])))) * (INPUT_SIZE / grid_width) # sigmoid
                         w = math.exp(out_f[0, y, x, 2]) * ANCHORS[2 * MASKS[i][b] + 0]
@@ -228,18 +217,18 @@ if __name__=="__main__":
     parser.add_argument("--threshold", "-t", type=float, default=0.25, help="Inference Threshold, default 0.25")
     args = parser.parse_args()
 
-    height, width = args.shape.split('x')
-    shape = (int(height), int(width))
+    width, height = args.shape.split('x')
+    shape = (int(width), int(height))
 
-    model_path = args.model_path
-    output_path = args.path_out
-    classes_file = args.classes
-    anchors_file = args.anchors
+    model_path = args.model
+    output_path = args.output
+    classes_list = get_obj_names(args.classes)
+    anchors_list = get_anchors(args.anchors)
     threshold = args.threshold
 
     if not os.path.exists(output_path):
         os.mkdir(output_path)
-    img_path_list = glob(args.path + "/**/*.jpg", recursive=True) + glob(args.path + "/**/*.png", recursive=True)
+    img_path_list = glob(args.input + "/**/*.jpg", recursive=True) + glob(args.input + "/**/*.png", recursive=True)
 
     # Load the TF-Lite model
     interpreter = tf.lite.Interpreter(model_path=model_path)
@@ -254,10 +243,12 @@ if __name__=="__main__":
         with open(annot_path, 'w') as f:
             f.write("")
 
+        org_img = cv2.imread(img_path)
+        img_h, img_w, img_c = org_img.shape
         if args.quant:
-            re_list = get_detections_for_keras_int8(interpreter, img_path, shape)
+            re_list = get_detections_for_keras_int8(org_img, interpreter, shape, threshold)
         else:
-            re_list = get_detections_for_keras_float32(interpreter, img_path, shape)
+            re_list = get_detections_for_keras_float32(org_img, interpreter, shape, threshold)
 
         final_list = nms(re_list)
         with open(annot_path, 'w') as f:
@@ -267,7 +258,7 @@ if __name__=="__main__":
                 annot_list = []
                 for i in range(len(final_list)):
                     cls, x1, y1, x2, y2 = final_list[i][-1], final_list[i][-2][0], final_list[i][-2][1], final_list[i][-2][2], final_list[i][-2][3]
-                    cx, cy, bw, bh = change_ratio((x1, y1, x2, y2))
+                    cx, cy, bw, bh = change_ratio((x1, y1, x2, y2), (img_w, img_h), shape)
                     annot_list.append(f"{cls} {cx} {cy} {bw} {bh}\n")
                 for i in annot_list:
                     f.write(i)
