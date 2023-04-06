@@ -5,7 +5,8 @@ This repository contains instructions and scripts to infer the Yolo-fastest Mode
                                            [--quant] [--shape SHAPE] [--classes CLASSES] 
                                            [--anchors ANCHORS][-t THRESHOLD] 
 
-    Run TF-Lite YOLO-fastest inference: error: the following arguments are required: --input/-i, --output/-o, --model/-m
+    Run TF-Lite YOLO-fastest inference: error: the following arguments are required:
+    --input/-i, --output/-o, --model/-m
     
     optional arguments:
       -h, --help              show this help message and exit
