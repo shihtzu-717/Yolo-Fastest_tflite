@@ -15,6 +15,8 @@ os.environ["CUDA_VISIBLE_DEVICES"] = "-1"
 OUTPUT_WIDTH = [26, 13]
 NUM_BOXES_PER_BLOCK = 3
 INPUT_SIZE = 416
+
+# object_names
 labels = ["Pothole",
           "Fatigue-Crack",
           "Vertical-Crack",
@@ -35,26 +37,34 @@ ORG_HEIGHT = 1080
 MODEL_WIDTH = 416
 MODEL_HEIGHT = 416
 
+def get_obj_names(names_file):
+    labels=[]
+    lines=[]
+    with open(names_file, 'r') as f:
+        lines = [i.strip() for i in f.readlines()]
+    for i in lines:
+        labels.append(i)
+    return labels
+
 def softmax(x):
     exp_x = np.exp(x - np.max(x))
     return exp_x / np.sum(exp_x)
 
 
 def change_ratio(box):
+    x1_model_size = box[0]
+    y1_model_size = box[1]
+    x2_model_size = box[2]
+    y2_model_size = box[3]
+    x1_img_size = (ORG_WIDTH/MODEL_WIDTH)*x1_model_size
+    y1_img_size = (ORG_HEIGHT/MODEL_HEIGHT)*y1_model_size
+    x2_img_size = (ORG_WIDTH/MODEL_WIDTH)*x2_model_size
+    y2_img_size = (ORG_HEIGHT/MODEL_HEIGHT)*y2_model_size
 
-    x1_416 = box[0]
-    y1_416 = box[1]
-    x2_416 = box[2]
-    y2_416 = box[3]
-    x1_1920 = (ORG_WIDTH/MODEL_WIDTH)*x1_416
-    y1_1080 = (ORG_HEIGHT/MODEL_HEIGHT)*y1_416
-    x2_1920 = (ORG_WIDTH/MODEL_WIDTH)*x2_416
-    y2_1080 = (ORG_HEIGHT/MODEL_HEIGHT)*y2_416
-
-    w = (x2_1920 - x1_1920)/ORG_WIDTH
-    h = (y2_1080 - y1_1080)/ORG_HEIGHT
-    x = (x1_1920 + (x2_1920 - x1_1920)/2)/ORG_WIDTH
-    y = (y1_1080 + (y2_1080 - y1_1080)/2)/ORG_HEIGHT
+    w = (x2_img_size - x1_img_size)/ORG_WIDTH
+    h = (y2_img_size - y1_img_size)/ORG_HEIGHT
+    x = (x1_img_size + (x2_img_size - x1_img_size)/2)/ORG_WIDTH
+    y = (y1_img_size + (y2_img_size - y1_img_size)/2)/ORG_HEIGHT
     return (x,y,w,h)
 
 def nms(result_list):
@@ -207,12 +217,15 @@ def get_detections_for_keras_int8(interpreter, img_path, shape):
     return detections
 
 if __name__=="__main__":
-    parser = argparse.ArgumentParser()
-    parser.add_argument("--path", "-p", type=str, required=True, help="Images Path")
-    parser.add_argument("--path_out", "-o", type=str, required=True, help="Save Path Infernece Result")
-    parser.add_argument("--model_path", "-m", type=str, required=True, help="TFLite Model Path")
-    parser.add_argument("--quantization", "-q", action="store_true", help="Model is Quantized")
-    parser.add_argument("-s", "--shape", default="416x416")
+    parser = argparse.ArgumentParser("Run TF-Lite YOLO-fastest inference")
+    parser.add_argument("--input", "-i", type=str, required=True, help="Images Path")
+    parser.add_argument("--output", "-o", type=str, required=True, help="Save Path Infernece Result")
+    parser.add_argument("--model", "-m", type=str, required=True, help="TFLite Model Path")
+    parser.add_argument("--quant", "-q", action="store_true", help="Model is Quantized")
+    parser.add_argument("--shape", "-s", default="416x416", help="Model Input Size")
+    parser.add_argument("--classes", "-c", type=str, help="Object Model Names File Path (ex. -n obj_names.txt")
+    parser.add_argument("--anchors", "-a", type=str, help="Anchors File Path (ex. -a best_anchors.txt")
+    parser.add_argument("--threshold", "-t", type=float, default=0.25, help="Inference Threshold, default 0.25")
     args = parser.parse_args()
 
     height, width = args.shape.split('x')
@@ -220,6 +233,9 @@ if __name__=="__main__":
 
     model_path = args.model_path
     output_path = args.path_out
+    classes_file = args.classes
+    anchors_file = args.anchors
+    threshold = args.threshold
 
     if not os.path.exists(output_path):
         os.mkdir(output_path)
@@ -238,7 +254,7 @@ if __name__=="__main__":
         with open(annot_path, 'w') as f:
             f.write("")
 
-        if args.quantization:
+        if args.quant:
             re_list = get_detections_for_keras_int8(interpreter, img_path, shape)
         else:
             re_list = get_detections_for_keras_float32(interpreter, img_path, shape)
