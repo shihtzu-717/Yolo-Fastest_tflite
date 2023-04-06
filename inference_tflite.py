@@ -17,16 +17,7 @@ NUM_BOXES_PER_BLOCK = 3
 INPUT_SIZE = 416
 
 # object_names
-labels = ["Pothole",
-          "Fatigue-Crack",
-          "Vertical-Crack",
-          "Horizontal-Crack",
-          "PoorFixed-Road",
-          "Trash",
-          "Banner",
-          "RoadMark-Poor",
-          "SafetyRod-Poor",
-          "Manhole"]
+labels = []
 
 ANCHORS = [115,73, 119,199, 242,238, 12,18, 37,49, 52,132]
 MASKS = [[3, 4, 5], [0, 1, 2]]
