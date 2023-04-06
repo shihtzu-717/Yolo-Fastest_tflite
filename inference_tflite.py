@@ -18,7 +18,6 @@ INPUT_SIZE = 416
 
 # object_names
 labels = []
-
 ANCHORS = []
 MASKS = [[3, 4, 5], [0, 1, 2]]
 THRESHOLD = 0.25
