@@ -211,8 +211,8 @@ if __name__=="__main__":
     parser.add_argument("--model", "-m", type=str, required=True, help="TFLite Model Path")
     parser.add_argument("--quant", "-q", action="store_true", help="Model is Quantized")
     parser.add_argument("--shape", "-s", default="416x416", help="Model Input Size")
-    parser.add_argument("--classes", "-c", type=str, help="Object Model Names File Path (ex. -n obj_names.txt")
-    parser.add_argument("--anchors", "-a", type=str, help="Anchors File Path (ex. -a best_anchors.txt")
+    parser.add_argument("--classes", "-c", type=str, required=True, help="Object Model Names File Path (ex. -n obj_names.txt")
+    parser.add_argument("--anchors", "-a", type=str, required=True, help="Anchors File Path (ex. -a best_anchors.txt")
     parser.add_argument("--threshold", "-t", type=float, default=0.25, help="Inference Threshold, default 0.25")
     args = parser.parse_args()
 
