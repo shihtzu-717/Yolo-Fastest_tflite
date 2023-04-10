@@ -1,4 +1,5 @@
-﻿# Inference-tflite
+﻿# Yolo-Fastest_tflite_Inference
+ 
 This repository contains instructions and scripts to infer the Yolo-fastest Model converted to tflite. When you insert image data with input, the inferred label is saved as Yolo-Format. You can also test tflite quantized to '--quant'.
 
 
