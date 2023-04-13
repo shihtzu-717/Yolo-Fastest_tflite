@@ -1,0 +1,334 @@
+import random
+import numpy as np
+import cv2
+import math
+import os
+import tensorflow as tf
+import heapq
+import argparse
+from tqdm import tqdm
+from glob import glob
+
+# os.environ["CUDA_VISIBLE_DEVICES"] = "-1"
+
+OUTPUT_WIDTH = [26, 13]
+NUM_BOXES_PER_BLOCK = 3
+INPUT_SIZE = 416
+
+# object_names
+labels = []
+ANCHORS = []
+MASKS = [[3, 4, 5], [0, 1, 2]]
+mNmsThresh = 0.01
+
+def plot_one_box(x, image, color=None, label=None, line_thickness=None):
+    # Plots one bounding box on image img
+    tl = line_thickness or round(0.002 * (image.shape[0] + image.shape[1]) / 2)  # line/font thickness
+    color = color or [random.randint(0, 255) for _ in range(3)]
+    c1, c2 = (int(x[0]), int(x[1])), (int(x[2]), int(x[3]))
+    cv2.rectangle(image, c1, c2, color, thickness=tl, lineType=cv2.LINE_AA)
+    if label:
+        tf = 2  # font thickness
+        t_size = cv2.getTextSize(label, 0, fontScale=tl / 3, thickness=tf)[0]
+        r1, r2 = (x[0], x[1]-t_size[1]-5), (x[0]+t_size[0]+5, x[1])
+        cv2.rectangle(image, r1, r2, color, -5, cv2.LINE_AA)  # filled
+        cv2.putText(image, label, (r1[0]+2, r2[1]-1), 0 , tl / 3, [225, 255, 255], thickness=tf, lineType=cv2.LINE_AA)
+
+def draw_box(img_path, annot_path, colors, save_result_path):
+    image = cv2.imread(img_path).copy()
+    try:
+        height, width, channels = image.shape
+    except:
+        print('no shape info.')
+        return 0
+    try:
+        annots_file = open(annot_path, 'r')
+    except:
+        return 0
+
+    box_number = 0
+    object_list = [i for i in annots_file]
+
+    for line in object_list:
+        staff = line.split()
+        class_idx = int(staff[0])
+        x_center, y_center, w, h = float(staff[1]) * width, float(staff[2]) * height, float(staff[3]) * width, float(
+            staff[4]) * height
+        x1 = round(x_center - w / 2)
+        y1 = round(y_center - h / 2)
+        x2 = round(x_center + w / 2)
+        y2 = round(y_center + h / 2)
+
+        plot_one_box([x1, y1, x2, y2], image, color=colors[class_idx], label=labels[class_idx], line_thickness=None)
+
+        cv2.imwrite(save_result_path, image)
+        box_number += 1
+
+    return box_number
+
+
+def get_obj_names(names_file):
+    global labels
+    with open(names_file, 'r') as f:
+        labels = [i.strip() for i in f.readlines()]
+    return labels
+
+def get_anchors(anchors_file):
+    global ANCHORS
+    with open(anchors_file, 'r') as f:
+        ANCHORS = [float(x) for x in f.readline().split(',')]
+    return ANCHORS
+
+def softmax(x):
+    exp_x = np.exp(x - np.max(x))
+    return exp_x / np.sum(exp_x)
+
+def change_ratio(box, img_shape, model_shape):
+    ORG_WIDTH = img_shape[0]
+    ORG_HEIGHT = img_shape[1]
+    MODEL_WIDTH = model_shape[0]
+    MODEL_HEIGHT = model_shape[1]
+
+    x1_model_size = box[0]
+    y1_model_size = box[1]
+    x2_model_size = box[2]
+    y2_model_size = box[3]
+    x1_img_size = (ORG_WIDTH/MODEL_WIDTH)*x1_model_size
+    y1_img_size = (ORG_HEIGHT/MODEL_HEIGHT)*y1_model_size
+    x2_img_size = (ORG_WIDTH/MODEL_WIDTH)*x2_model_size
+    y2_img_size = (ORG_HEIGHT/MODEL_HEIGHT)*y2_model_size
+
+    w = (x2_img_size - x1_img_size)/ORG_WIDTH
+    h = (y2_img_size - y1_img_size)/ORG_HEIGHT
+    x = (x1_img_size + (x2_img_size - x1_img_size)/2)/ORG_WIDTH
+    y = (y1_img_size + (y2_img_size - y1_img_size)/2)/ORG_HEIGHT
+    return (x,y,w,h)
+
+def nms(result_list):
+    nms_list = []
+    for k in range(len(labels)):
+        pq = [] # 최소힙
+        for i in range(len(result_list)):
+            if result_list[i][-1] == k:
+                heapq.heappush(pq, (-result_list[i][2], result_list[i]))
+        while len(pq) > 0:
+            _, max = heapq.heappop(pq)
+            nms_list.append(max)
+            detections = [d for _, d in pq]
+            pq.clear()
+            for j in range(1, len(detections)):
+                detection = detections[j]
+                b = detection[3]
+                if box_iou(max[3], b) < mNmsThresh:
+                    heapq.heappush(pq, (-detection[2], detection))
+    return nms_list
+
+def box_iou(a, b):
+    return box_intersection(a, b) / box_union(a, b)
+
+def box_intersection(a, b):
+    a_left = a[0]; a_top = a[1]; a_right = a[2]; a_bottom = a[3]
+    b_left = b[0]; b_top = b[1]; b_right = b[2]; b_bottom = b[3]
+    w = overlap((a_left + a_right) / 2, a_right - a_left, (b_left + b_right) / 2, b_right - b_left)
+    h = overlap((a_top + a_bottom) / 2, a_bottom - a_top, (b_top + b_bottom) / 2, b_bottom - b_top)
+    if w < 0 or h < 0:
+        return 0
+    area = w * h
+    return area
+
+def overlap(x1, w1, x2, w2):
+    l1 = x1 - w1 / 2
+    l2 = x2 - w2 / 2
+    left = l1 if l1 > l2 else l2
+    r1 = x1 + w1 / 2
+    r2 = x2 + w2 / 2
+    right = r1 if r1 < r2 else r2
+    return right - left
+
+def box_union(a, b):
+    a_left = a[0]; a_top = a[1]; a_right = a[2]; a_bottom = a[3]
+    b_left = b[0]; b_top = b[1]; b_right = b[2]; b_bottom = b[3]
+    i = box_intersection(a, b)
+    u = (a_right - a_left) * (a_bottom - a_top) + (b_right - b_left) * (b_bottom - b_top) - i
+    return u
+
+def get_detections_for_keras_float32(org_img, interpreter, shape, threshold, darknet255_Flag):
+    bgr_img = cv2.resize(org_img, shape)
+    rgb_img = cv2.cvtColor(bgr_img, cv2.COLOR_BGR2RGB) # Convert BGR to RGB
+
+    if darknet255_Flag:
+        img = rgb_img.astype(np.float32) # darknet255-GPU, input float32
+    else:
+        # Normalize image from 0 to 1
+        img = np.divide(rgb_img, 255.0).astype(np.float32) # darknet-GPU, input normalize+float32
+    # Add dimensions
+    img = np.expand_dims(img, 0) # (416, 416, 3) -> (1, 416, 416, 3)
+
+    # Get input and output tensors.
+    input_details = interpreter.get_input_details()
+    output_details = interpreter.get_output_details()
+
+    interpreter.set_tensor(input_details[0]['index'], img)
+    interpreter.invoke()
+
+    output_width_length = len(OUTPUT_WIDTH)
+
+    detections = []
+    for i in range(output_width_length):
+        grid_width = OUTPUT_WIDTH[i]
+        out = interpreter.get_tensor(output_details[i]['index'])
+        for y in range(grid_width):
+            for x in range(grid_width):
+                for b in range(NUM_BOXES_PER_BLOCK):
+                    offset = (grid_width * (NUM_BOXES_PER_BLOCK * (len(labels) + 5))) * y + (
+                                NUM_BOXES_PER_BLOCK * (len(labels) + 5)) * x + (len(labels) + 5) * b
+                    confidence = 1 / (1 + math.exp(-out[0, y, x, 4])) # sigmoid
+                    detected_class = -1
+                    max_class = 0
+                    classes = out[0, y, x, 5:(5 + len(labels))]
+                    classes = softmax(classes)
+                    for c in range(len(labels)):
+                        if classes[c] > max_class:
+                            detected_class = c
+                            max_class = classes[c]
+                    confidence_in_class = max_class * confidence
+                    if confidence_in_class > threshold:
+                        x_pos = (x + (1 / (1 + math.exp(-out[0, y, x, 0])))) * (INPUT_SIZE / grid_width) # sigmoid
+                        y_pos = (y + (1 / (1 + math.exp(-out[0, y, x, 1])))) * (INPUT_SIZE / grid_width) # sigmoid
+                        w = math.exp(out[0, y, x, 2]) * ANCHORS[2 * MASKS[i][b] + 0]
+                        h = math.exp(out[0, y, x, 3]) * ANCHORS[2 * MASKS[i][b] + 1]
+                        rect = [max(0, x_pos - w / 2), max(0, y_pos - h / 2), min(416 - 1, x_pos + w / 2), min(416 - 1, y_pos + h / 2)]
+                        detections.append(
+                            [str(offset), labels[detected_class], confidence_in_class, rect, detected_class])
+    return detections
+
+
+def get_detections_for_keras_int8(org_img, interpreter, shape, threshold):
+    bgr_img = cv2.resize(org_img, shape)
+    rgb_img = cv2.cvtColor(bgr_img, cv2.COLOR_BGR2RGB) # Convert BGR to RGB
+
+    # Add dimensions
+    img = np.expand_dims(rgb_img, 0) # (416, 416, 3) -> (1, 416, 416, 3)
+
+    # Get input and output tensors.
+    input_details = interpreter.get_input_details()
+    output_details = interpreter.get_output_details()
+
+    interpreter.set_tensor(input_details[0]['index'], img)
+    interpreter.invoke()
+
+    output_width_length = len(OUTPUT_WIDTH)
+
+    detections = []
+    for i in range(output_width_length):
+        grid_width = OUTPUT_WIDTH[i]
+        out = interpreter.get_tensor(output_details[i]['index'])
+        o_scale, o_zero = output_details[i]['quantization']
+        out_f = (out.astype(np.float32) - o_zero) * o_scale
+        for y in range(grid_width):
+            for x in range(grid_width):
+                for b in range(NUM_BOXES_PER_BLOCK):
+                    offset = (grid_width * (NUM_BOXES_PER_BLOCK * (len(labels) + 5))) * y + (
+                                NUM_BOXES_PER_BLOCK * (len(labels) + 5)) * x + (len(labels) + 5) * b
+                    confidence = 1 / (1 + math.exp(-out_f[0, y, x, 4])) # sigmoid
+                    detected_class = -1
+                    max_class = 0
+                    classes = out_f[0, y, x, 5:(5 + len(labels))]                 
+                    classes = softmax(classes)
+                    for c in range(len(labels)):
+                        if classes[c] > max_class:
+                            detected_class = c
+                            max_class = classes[c]
+                    confidence_in_class = max_class * confidence
+                    if confidence_in_class > threshold:
+                        x_pos = (x + (1 / (1 + math.exp(-out_f[0, y, x, 0])))) * (INPUT_SIZE / grid_width) # sigmoid
+                        y_pos = (y + (1 / (1 + math.exp(-out_f[0, y, x, 1])))) * (INPUT_SIZE / grid_width) # sigmoid
+                        w = math.exp(out_f[0, y, x, 2]) * ANCHORS[2 * MASKS[i][b] + 0]
+                        h = math.exp(out_f[0, y, x, 3]) * ANCHORS[2 * MASKS[i][b] + 1]
+                        rect = [max(0, x_pos - w / 2), max(0, y_pos - h / 2), min(416 - 1, x_pos + w / 2), min(416 - 1, y_pos + h / 2)]
+                        detections.append(
+                            [str(offset), labels[detected_class], confidence_in_class, rect, detected_class])
+    return detections
+
+if __name__=="__main__":
+    parser = argparse.ArgumentParser("Run TF-Lite YOLO-fastest inference")
+    parser.add_argument("--input", "-i", type=str, required=True, help="Images Path")
+    parser.add_argument("--output", "-o", type=str, required=True, help="Save Path Infernece Result")
+    parser.add_argument("--model", "-m", type=str, required=True, help="TFLite Model Path")
+    parser.add_argument("--quant", "-q", action="store_true", help="Model is Quantized")
+    parser.add_argument("--darknet255", "-255", action="store_true", help="darknet255 GPU Model")
+    parser.add_argument("--shape", "-s", type=str, default="416x416", help="Model Input Size")
+    parser.add_argument("--classes", "-c", type=str, required=True, help="Object Model Names File Path (ex. -n obj_names.txt")
+    parser.add_argument("--anchors", "-a", type=str, required=True, help="Anchors File Path (ex. -a best_anchors.txt")
+    parser.add_argument("--threshold", "-t", type=float, default=0.25, help="Inference Threshold, default 0.25")
+    parser.add_argument("--draw_box", "-b", action="store_true", help="Save Inference Images")
+    parser.add_argument("--results_path", "-r", type=str, default="results", help="Save Path Infernece Images Result")
+    args = parser.parse_args()
+
+    width, height = args.shape.split('x')
+    shape = (int(width), int(height))
+
+    model_path = args.model
+    output_path = args.output
+    classes_list = get_obj_names(args.classes)
+    anchors_list = get_anchors(args.anchors)
+    threshold = args.threshold
+    darknet255_Flag = args.darknet255
+
+    if not os.path.exists(output_path):
+        os.mkdir(output_path)
+    img_path_list = glob(args.input + "/**/*.jpg", recursive=True) + glob(args.input + "/**/*.png", recursive=True)
+
+    # Load the TF-Lite model
+    interpreter = tf.lite.Interpreter(model_path=model_path)
+    interpreter.allocate_tensors()
+
+
+    for img_path in tqdm(img_path_list):
+        fn = os.path.basename(img_path)
+        annot_fn = fn.replace('jpg', 'txt')
+        annot_fn = annot_fn.replace('png', 'txt')
+        annot_path = os.path.join(output_path, annot_fn)
+        with open(annot_path, 'w') as f:
+            f.write("")
+
+        org_img = cv2.imread(img_path)
+        img_h, img_w, img_c = org_img.shape
+        if args.quant:
+            re_list = get_detections_for_keras_int8(org_img, interpreter, shape, threshold)
+        else:
+            re_list = get_detections_for_keras_float32(org_img, interpreter, shape, threshold, darknet255_Flag)
+
+        final_list = nms(re_list)
+        with open(annot_path, 'w') as f:
+            if not final_list:
+                f.write("")
+            else:
+                annot_list = []
+                for i in range(len(final_list)):
+                    cls, x1, y1, x2, y2 = final_list[i][-1], final_list[i][-2][0], final_list[i][-2][1], final_list[i][-2][2], final_list[i][-2][3]
+                    cx, cy, bw, bh = change_ratio((x1, y1, x2, y2), (img_w, img_h), shape)
+                    annot_list.append(f"{cls} {cx} {cy} {bw} {bh}\n")
+                for i in annot_list:
+                    f.write(i)
+
+    if args.draw_box:
+        save_img_dir = os.path.join(args.path, args.results_path)
+        box_total = 0
+        image_total = 0
+        random.seed(37)
+        colors = [[random.randint(0, 255) for _ in range(3)] for _ in range(len(labels))]
+        if not os.path.exists(save_img_dir):
+            os.mkdir(save_img_dir)
+        print("------------->   Drawing a bounding box")
+        for img_path in (img_path_list):
+            fn = os.path.basename(img_path)
+            annot_fn = fn.replace('jpg', 'txt')
+            annot_fn = annot_fn.replace('png', 'txt')
+            annot_path = os.path.join(output_path, annot_fn)
+            save_result_path = os.path.join(save_img_dir, fn)
+            box_num = draw_box(img_path, annot_path, colors, save_result_path)
+            box_total += box_num
+            image_total += 1
+            print('Box number:', box_total, 'Image number:', image_total)
+            print('---------------------------------------------------------')
