@@ -116,7 +116,7 @@ def nms(result_list):
             nms_list.append(max)
             detections = [d for _, d in pq]
             pq.clear()
-            for j in range(1, len(detections)):
+            for j in range(len(detections)):
                 detection = detections[j]
                 b = detection[3]
                 if box_iou(max[3], b) < mNmsThresh:
